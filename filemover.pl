@@ -103,7 +103,7 @@ sub check_filepaths {
 	if (! -e $pathbase) {
 	    print "Unfortunately this directory does not exist. ";
 	    print "Please contact $config->{support}->{email}.\n";
-	    #exit; #reenable for deployment
+	    exit; #reenable for deployment
 	} else {
 	    push @pathargs, $pathbase;
 	}
@@ -165,8 +165,19 @@ sub transport_command {
 	my $command = build_pfp($base, $dirlist);
 	return $command;
     }
-    # other tools can go here
-    
+    if ($tool eq "tarpipe") {
+	#create file list
+	while (@paths) {
+	    if ($#paths > 0) {
+		$dirlist .= pop @paths;
+		$dirlist .= " "; #space seperated
+	    } else {
+		$base = pop @paths;
+	    }
+	}
+	my $command = build_tarpipe($base, $dirlist);
+	return $command;
+    }
 }
 
 sub build_pfp {
@@ -183,7 +194,7 @@ sub build_pfp {
 	$nowait = "--nowait";
     }
 
-    # we still need to determine how the target is going to
+    # TODO: we still need to determine how the target is going to
     # be determined. Leave it as is for now
     
     my $pfp = <<EOF;
@@ -195,6 +206,22 @@ EOF
     $pfp = trim($pfp);
     print "pfp = $pfp\n";
     return $pfp;
+}
+
+# in this case we are building a pretty naive tarpipe just to see what it looks like
+# ideally we'd do this with fpart but that can come later
+sub build_tarpipe {
+    my $base = shift @_;
+    my $dirpaths = shift @_;
+
+    #TODO: again same issue with defining the target 
+    my $target = " ";
+
+    my $command = "pwd $base;\\
+tar $config->{tarpipeopts}->{tarmakeopts} -cf $dirpaths - | //
+tar $config->{tarpipeopts}->{tarextractopts} -xf - -C $target";
+
+    return $command;
 }
 
 # take the incoming filemove command and construct a
@@ -269,21 +296,27 @@ sub trim {
 #                             #
 ###############################
 
-getopts ("f:h", \%options);
+getopts ("f:th", \%options);
 if (defined $options{h}) {
     print "filemover usage\n";
-    print "\tfilemover.pl [-f] [-h]\n";
-    print "\t-f quoted comma separated list of directories to move (relative to \$SCRATCH)\n";
-    print "\t\t these directories must be readable by the user\n";
+    print "\tfilemover.pl [-f 'comma,sereparated,directory,list'] [-t] [-h]\n";
+    print "\t-f quoted comma separated list of directories to move (relative to \$SCRATCH[?])\n";
+    print "\t   these directories must be readable by the user\n";
+    print "\t-t Use tar and pipe instead of parsyncfp. Not recommended.\n";
     print "\t-h this help text\n";
     exit;
 }
 
 read_config($configure_path);
 
+my $tool = "pfp";
+if ($options{t}) {
+    $tool = "tarpipe";
+}
+
 print_notice();
 my $paths_ref = check_filepaths($options{f});
 # if we get here we have *something* in paths_ref even if it's just the base
 # directory. Now that we have that we can build the transport command
-my $filemove_command = transport_command($paths_ref, "pfp");
+my $filemove_command = transport_command($paths_ref, $tool);
 my $slurm_batch = build_slurm_batch($filemove_command);
