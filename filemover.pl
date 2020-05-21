@@ -92,7 +92,7 @@ sub check_filepaths {
 	exit;
     }
     (my $gid, my $err, my $exit) = capture {
-	system('getent group | grep ^`whoami` | cut -d ":" -f3');
+	system('getent group | grep -w `whoami` | cut -d ":" -f1');
     };
     if (!$err) {
 	chomp $gid;
@@ -183,7 +183,7 @@ sub transport_command {
 sub build_pfp {
     my $startdir = shift @_;
     my $dirlist = shift @_;
-    my $target = " ";
+    my $target = $config->{filesystem}->{inbound}; # this is just the prefix
     my $nowait;
 
     if (!$dirlist) {
@@ -194,15 +194,26 @@ sub build_pfp {
 	$nowait = "--nowait";
     }
 
+    ## this is just for testing at this point ##
     # TODO: we still need to determine how the target is going to
     # be determined. Leave it as is for now
+    my $username = capture {system("whoami")};
+    $username = trim($username);
+    if (!$username) {
+	print "We can't figure out your username. ";
+	print "Please contact $config->{support}->{email}\n";
+	exit;
+    }
+    $target .= "/" . $username;
     
     my $pfp = <<EOF;
 $config->{paths}->{parsyncfp} -NP=$config->{parsyncopts}->{np} \\
 -chunksize=$config->{parsyncopts}->{chunk_size} $nowait \\
 --rsyncopts='$config->{parsyncopts}->{rsyncopts}' \\
+--interface=$config->{parsyncopts}->{interface} \\
 --startdir='$startdir' $dirlist $target
 EOF
+
     $pfp = trim($pfp);
     print "pfp = $pfp\n";
     return $pfp;
@@ -213,9 +224,19 @@ EOF
 sub build_tarpipe {
     my $base = shift @_;
     my $dirpaths = shift @_;
+    my $target = $config->{filesystem}->{inbound}; # this is just the prefix
 
-    #TODO: again same issue with defining the target 
-    my $target = " ";
+    ## this is just for testing at this point ##
+    # TODO: we still need to determine how the target is going to
+    # be determined. Leave it as is for now
+    my $username = capture {system("whoami")};
+    $username = trim($username);
+    if (!$username) {
+	print "We can't figure out your username. ";
+	print "Please contact $config->{support}->{email}\n";
+	exit;
+    }
+    $target .= "/" . $username;
 
     my $command = "pwd $base;\\
 tar $config->{tarpipeopts}->{tarmakeopts} -cf $dirpaths - | //
@@ -261,7 +282,7 @@ sub build_slurm_batch {
 #SBATCH --nodes=$config->{slurmopts}->{nodes}
 #SBATCH --output=$config->{slurmopts}->{output}
 
-echo "User              = $username
+echo "User              = $username"
 echo "Date              = \$(date)"
 echo "Hostname          = \$(hostname -s)"
 echo "Working Directory = \$(pwd)"
