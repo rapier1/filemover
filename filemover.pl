@@ -186,8 +186,10 @@ sub build_pfp {
     my $target = $config->{filesystem}->{inbound}; # this is just the prefix
     my $nowait;
 
+    # they haven't specified any directories but we need to provide one
+    # so use '.' to move all files in the root
     if (!$dirlist) {
-	$dirlist = " ";
+	$dirlist = ".";
     }
     
     if ($config->{parsyncopts}->{nowait} eq "true") {
