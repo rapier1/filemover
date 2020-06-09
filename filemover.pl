@@ -210,6 +210,7 @@ sub build_pfp {
     
     my $pfp = <<EOF;
 $config->{paths}->{parsyncfp} -NP=$config->{parsyncopts}->{np} \\
+-maxload=$config->{parsyncopts}->{maxload} \\
 -chunksize=$config->{parsyncopts}->{chunk_size} $nowait \\
 --rsyncopts='$config->{parsyncopts}->{rsyncopts}' \\
 --interface=$config->{parsyncopts}->{interface} \\
