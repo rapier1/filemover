@@ -81,73 +81,112 @@ sub read_config {
 # check the paths provided by the user to see if they exist
 # return a list of all paths that are valid
 sub check_filepaths {
-    my $path = shift @_;
     my @filelist;
     my $pathbase;
     my @pathargs;
-    
+    my %sources;
+
+    #sources hash structure
+    # sources -> groupname (char)
+    #              ->{'path'} base directory path (char)
+    #              ->{'dirs'} array of dirs (array)
+
     # first we get the base file path
     my $username = get_username();
-    # first we need to the get the gid number from passwd as that's the primary group
-    (my $gidnum, my $err, my $exit) = capture {
-	system("getent passwd | grep -w $username | cut -d ':' -f4");
+
+    # what I didn't know is that people can be members of multiple groups and may have
+    # files in multiple places that they need to move. So we need to treat the results 
+    # from this like they might be a list of groups separated by newlines
+    (my $gid, my $err, my $exit) = capture {
+	system("getent group | grep -w $username | cut -d ':' -f1");
     };
-    chomp $gidnum; # why there is a newline here I have no idea
-    # now we can get the primary group name
-    (my $gid, $err, $exit) = capture {
-	system("getent group | grep -w $gidnum | cut -d ':' -f1");
-    };
-    chomp $gid; #yet another newline messing things up
-    if (!$err) {
-	chomp $gid;
+    if ($err) {
+	my $usermsg = "Error: Unfortunately we cannot determine the what groups you belong to. Please contact $config->{support}->{email}.\n";
+	my $sysmsg = "Error: Cannot determine user groups: $err";
+	errorLog ($sysmsg, $usermsg, "crit", $username);
+    }
+    # take the list and split it into an array
+    my @groups = split ("\n", $gid);
+
+    #check each entry in the array and see if it corresponds to a valid path
+    foreach $gid (@groups) {
 	$pathbase = "$config->{filesystem}->{outbound}/$gid/$username";
-	print "Your group ID is $gid\n";
-	print "We will use $pathbase ";
-	print "as the base directory for your files\n";
-	if (! -e $pathbase) {
-	    my $usermsg = "Error: Unfortunately this directory does not exist. Please contact $config->{support}->{email}.\n";
-	    my $sysmsg = "Error: User directory does not exist in default location: $pathbase";
-	    my $user = get_username();
-	    errorLog ($sysmsg, $usermsg, "crit", $user);	
-	} else {
-	    push @pathargs, $pathbase;
+	if (-e $pathbase) {
+	    # it does so add it to our hash
+	    $sources{$gid}{'path'} = $pathbase;
 	}
     }
-    
-    # path may not be defined in which case we use the default user directory
-    # as the base
-    if ($path) {
-	# $path may be a CSV of directories
-	@filelist = split /,/, $path;
-    } else {
-	return \@pathargs;
+
+    #Whoops they don't have any valid paths that we can find 
+    if (scalar keys %sources == 0) {
+	my $usermsg = "Error: Unfortunately we cannot find any valid directories correspond to your groups. Please contact $config->{support}->{email}.\n";
+	my $sysmsg = "Error: User does not have any directories associated with known user groups: " . join (":", @groups);
+	errorLog ($sysmsg, $usermsg, "crit", $username);
     }
-    my $dircount = $#filelist + 1;
-    my $goodcount = $dircount;
-    foreach my $directory (@filelist) {
-	$directory = trim($directory);
-	if (!-e "$pathbase/$directory") {
-	    print "$pathbase/$directory does not exist\n";
-	    $goodcount--;
-	} else {
-	    push @pathargs, $directory;
+
+    # go through each hash entry and get the list of directories they
+    # want to transfer from each root path
+    foreach my $group (sort keys %sources) {
+	$pathbase = $sources{$group}{'path'};
+	print "Enter a comma delimited list of the directories you would like to transfer\n";
+	print "from the following base directory. If you would like to transfer everything\n";
+	print "enter a blank line. To skip this path enter 'skip'\n";
+	print "Base directory: $pathbase\n";
+	my $input = <STDIN>;
+	chomp $input;
+	
+	#give them them option to skip this path
+	if ($input =~ /skip/i) {
+	    delete $sources{$group};
+	    next;
+	}
+
+	# TODO: we should probably ensure to remove leading and trailing commas
+	# it shouldn't mess anything up if we don't as it will just check the 
+	# root diretcory which we know exists but 
+	@filelist = split /,/, $input;
+	
+	# they've entered something so validate that these
+	# subdirectories exist
+	if (scalar @filelist > 0) {
+	    my $dircount = scalar @filelist;
+	    my $goodcount = $dircount;
+	    foreach my $directory (@filelist) {
+		$directory = trim($directory);
+		if (!-e "$pathbase/$directory") {
+		    print "$pathbase/$directory does not exist\n";
+		    $goodcount--;
+		} else {
+		    push @{$sources{$group}{'dirs'}}, $directory;
+		}
+	    }
+	    print "$goodcount of $dircount directories have been validated\n";
+	    print "Continue? (Y/n)\n";
+	    my $input = <STDIN>;
+	    if ($input =~ /n/i) {
+		my $usermsg = "Error: You chose to not continue. Your files will not be transferred.\n";
+		my $sysmsg = "Error: User halted filemover in check_filepaths.";
+		my $user = get_username();
+		errorLog ($sysmsg, $usermsg, "warn", $user);
+		exit; #explicit exit because 'warn' doesn't exit and we don't want to send mail to support
+	    } 
 	}
     }
-    print "$goodcount of $dircount directories have been validated\n";
-    print "Continue? (Y/n)\n";
-    my $input = <STDIN>;
-    if ($input =~ /n/i) {
-	my $usermsg = "Error: You chose to not continue. Your files will not be transferred.\n";
-	my $sysmsg = "Error: User halted filemover in check_filepaths.";
+
+    # after goign through all of that they must have skipped all of their
+    # root directories. Whatever. Warn them and exit. 
+    if (scalar keys %sources == 0) {
+	my $usermsg = "Error: You have not selected any directories to transfer. Your files will not be transferred.\n";
+	my $sysmsg = "Error: User didn't select any directories to transfer.";
 	my $user = get_username();
-	errorLog ($sysmsg, $usermsg, "crit", $user);	
-    } else {
-	return \@pathargs;
+	errorLog ($sysmsg, $usermsg, "warn", $user);	
+	exit; #explicit exit because 'warn' doesn't exit and we don't want to send mail to support
     }
+    return \%sources;
 }
 
 sub transport_command {
-    my $paths_ref = shift @_; #referenced paths arrays from check_filepaths
+    my $sources_ref = shift @_; #referenced sources hash from check_filepaths
     my $tool = shift @_;
     my $base;
     my $dirlist;
@@ -158,48 +197,46 @@ sub transport_command {
 	return $command;
     }
 
-    my @paths = @{$paths_ref};
+    my %sources = %{$sources_ref};
     if ($tool eq "pfp") {
-	# pop things off the end of the array
-	# until we get the 0th element and pop that
-	# into the base directory variable
-	while (@paths) {
-	    if ($#paths > 0) {
-		$dirlist .= pop @paths;
-		$dirlist .= " "; #space seperated
-	    } else {
-		$base = pop @paths;
+	foreach my $group (keys %sources) {
+	    $base = $sources{$group}{'path'};
+	    $dirlist = ""; #have to set it to null otherwise it inherits the last set value
+	    if ($sources{$group}{'dirs'}) {
+		$dirlist = join " ", @{$sources{$group}{'dirs'}};
 	    }
+	    # we can now build the parsyncfp directory line
+	    # with $base $dirlist and if the dirlist is empty we
+	    # still have a a valid argument
+	    $command .= build_pfp($base, $dirlist, $group) . "\n\n";
 	}
-	
-	# we can now build the parsyncfp directory line
-	# with $base $dirlist and if the dirlist is empty we
-	# still have a a valid argument
-	$command = build_pfp($base, $dirlist);
+	$command .= "#copy parsyncfp log file for performance evaluation\n";
+	$command .= "cp filemover_*.log /pylon5/pscstaff/parsync/parsync_caches/rapier.psync.cache/pscstaff\n\n";
 	return $command;
     }
-    if ($tool eq "tarpipe") {
+    #if ($tool eq "tarpipe") {
 	#create file list
-	while (@paths) {
-	    if ($#paths > 0) {
-		$dirlist .= pop @paths;
-		$dirlist .= " "; #space seperated
-	    } else {
-		$base = pop @paths;
-	    }
-	}
-	$command = build_tarpipe($base, $dirlist);
-	return $command;
-    }
-    if ($tool eq "fpsync") {
-	$command = build_fpsync(\@paths);
-	return $command;
-    }
+	#while (@paths) {
+	 #   if ($#paths > 0) {
+	#	$dirlist .= pop @paths;
+	#	$dirlist .= " "; #space seperated
+	 #   } else {
+	#	$base = pop @paths;
+	 #   }
+	#}
+	#$command = build_tarpipe($base, $dirlist);
+	#return $command;
+    #}
+    #if ($tool eq "fpsync") {
+#	$command = build_fpsync(\@paths);
+#	return $command;
+ #   }
 }
 
 sub build_pfp {
     my $startdir = shift @_;
     my $dirlist = shift @_;
+    my $group = shift @_;
     my $target;
     my $nowait;
 
@@ -228,18 +265,25 @@ sub build_pfp {
 	## this is just for testing at this point ##
 	# TODO: we still need to determine how the target is going to
 	# be determined. Leave it as is for now
-	$target .= "/" . $username;
+	$target .= "/" . $group . "/" . $username;
     }
     
     my $pfp = <<EOF;
+#ensure that the target directory exist
+mkdir -p $target
+
 $config->{paths}->{parsyncfp} -NP=$config->{parsyncopts}->{np} \\
 --user=$username \\
+--spinneroff \\
 -maxload=$config->{parsyncopts}->{maxload} \\
 -chunksize=$config->{parsyncopts}->{chunk_size} $nowait \\
 --rsyncopts='$config->{parsyncopts}->{rsyncopts}' \\
 --interface=$config->{parsyncopts}->{interface} \\
---altcache=$config->{paths}->{cache}/$username.psync.cache \\
---startdir='$startdir' $dirlist $target
+--altcache=$config->{paths}->{cache}/$username.psync.cache/$group \\
+--startdir='$startdir' $dirlist $target 
+
+#parse the rsync logs for failures. logrunner also clears the rsync logs
+$config->{paths}->{parsync_bindir}/logrunner.pl $config->{paths}->{cache}/$username.psync.cache/$group $username
 EOF
 
     $pfp = trim($pfp);
@@ -351,8 +395,6 @@ export PATH="\$PATH:$config->{paths}->{parsync_bindir}"
 export ANSI_COLORS_DISABLED="true"
 
 $move_command
-
-$config->{paths}->{parsync_bindir}/logrunner.pl $config->{paths}->{cache}/$username.psync.cache $username
 
 EOF
 
@@ -468,7 +510,7 @@ sub mailError {
 #                             #
 ###############################
 
-if (!getopts ("d:tfhm", \%options)) {
+if (!getopts ("btfhm", \%options)) {
     print "You entered an invalid option.\n";
     &usage;
 }
@@ -499,18 +541,24 @@ if ($options{m}) {
 
 print_notice();
 
-my $paths_ref;
+my $sources_ref;
 if (!$options{m}) {
-    $paths_ref = check_filepaths($options{d});
+    $sources_ref = check_filepaths();
 }
 
 # if we get here we have *something* in paths_ref even if it's just the base
 # directory. Now that we have that we can build the transport command
-my $filemove_command = transport_command($paths_ref, $tool);
+my $filemove_command = transport_command($sources_ref, $tool);
 my $slurm_batch = build_slurm_batch($filemove_command);
 # we have the slurm batch file written. Execute it. 
-my $slurm_id = fire_slurm($slurm_batch);
-print "Your file transfer job has been submitted to slurm. The slurm job id is $slurm_id\n";
-print "You can track progress in the filemover_" . $slurm_id . ".log file\n";
-syslog ("notice", "Batch job $slurm_id submitted to slurm for user: " . get_username());
+if (!$options{b}) {
+    my $slurm_id = fire_slurm($slurm_batch);
+    print "Your file transfer job has been submitted to slurm. The slurm job id is $slurm_id\n";
+    print "You can track progress in the filemover_" . $slurm_id . ".log file\n";
+    syslog ("notice", "Batch job $slurm_id submitted to slurm for user: " . get_username());
+} else {
+    print "The slurm job batch file has been written to your home directory but not executed\n";
+    print "You will need to submit that job manually\n";
+    syslog ("notice", "Batch job created but not submitted for user: " . get_username());
+}
 exit;
