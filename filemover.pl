@@ -211,7 +211,7 @@ sub transport_command {
 	    $command .= build_pfp($base, $dirlist, $group) . "\n\n";
 	}
 	$command .= "#copy parsyncfp log file for performance evaluation\n";
-	$command .= "cp filemover_*.log /pylon5/pscstaff/parsync/parsync_caches/rapier.psync.cache/pscstaff\n\n";
+	$command .= "cp filemover_*.log $config->{paths}->{cache}/$username.psync.cache/\n\n";
 	return $command;
     }
     #if ($tool eq "tarpipe") {
@@ -269,8 +269,11 @@ sub build_pfp {
     }
     
     my $pfp = <<EOF;
-#ensure that the target directory exist
+#ensure that the target directory exists
 mkdir -p $target
+
+#ensure that the cache diectory exists
+mkdir -p $config->{paths}->{cache}/$username.psync.cache/$group
 
 $config->{paths}->{parsyncfp} -NP=$config->{parsyncopts}->{np} \\
 --user=$username \\
