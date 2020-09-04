@@ -210,6 +210,7 @@ sub transport_command {
 	    # still have a a valid argument
 	    $command .= build_pfp($base, $dirlist, $group) . "\n\n";
 	}
+	my $username = get_username();
 	$command .= "#copy parsyncfp log file for performance evaluation\n";
 	$command .= "cp filemover_*.log $config->{paths}->{cache}/$username.psync.cache/\n\n";
 	return $command;
