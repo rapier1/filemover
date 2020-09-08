@@ -212,7 +212,9 @@ sub transport_command {
 	}
 	my $username = get_username();
 	$command .= "#copy parsyncfp log file for performance evaluation\n";
-	$command .= "cp filemover_*.log $config->{paths}->{cache}/$username.psync.cache/\n\n";
+	$command .= "cp ~/filemover_\${SLURM_JOB_ID}.log $config->{paths}->{cache}/$username.psync.cache/\n\n";
+	$command .= "#parse the user log file for performance data\n";
+	$command .= "$config->{paths}->{parsync_bindir}/logrunner.pl $config->{paths}->{cache}/$username.psync.cache $username \${SLURM_JOB_ID}\n\n";
 	return $command;
     }
     #if ($tool eq "tarpipe") {
@@ -384,7 +386,7 @@ sub build_slurm_batch {
 #SBATCH --ntasks-per-node=$config->{slurmopts}->{ntasks}
 #SBATCH --nodes=$config->{slurmopts}->{nodes}
 #SBATCH --time=$config->{slurmopts}->{time}
-#SBATCH --output=$config->{slurmopts}->{output}
+#SBATCH --output=~/$config->{slurmopts}->{output}
 
 echo "User              = $username"
 echo "Date              = \$(date)"

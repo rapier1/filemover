@@ -669,6 +669,7 @@ if ( $VERBOSE >= 2 ) { INFO("Starting the 1st [$NP] rsyncs ..\n"); }
 my $sc = 0;
 my @chunkfilewaitflag;
 my @timer;
+my $cumFiles = 0; #cumulative count of files
 # Here's where the faulty breakout is happening  - check with an actual run with a small dir to bridgit.
 #
 while ( $RSYNCS_GOING < $NP && $KEEPGOING ) {    #
@@ -695,6 +696,9 @@ while ( $RSYNCS_GOING < $NP && $KEEPGOING ) {    #
 	    }
 	    $chunkfilewaitflag[$CUR_FPI] = $timer[$CUR_FPI] = 0;
 	}	
+	if (-e $CUR_FP_FLE) {
+	    $cumFiles += `wc -l $CUR_FP_FLE`;
+	}
 	system("$RSYNC_CMD");    # launch rsync and capture the bg job PID to PIDfile
 	$CUR_FPI++;
 	$RSYNCS_GOING++;
@@ -757,259 +761,271 @@ chomp $day;
 
 #                                     |     TCP / RDMA  out  |
 if ( $VERBOSE == 0 ) {    #  ..............|---------- / ---------|
-  print
-    "        | Elapsed |   1m   |    [$IFN](MB/s)   | Running || Susp'd  |      Chunks       [$day]
-  Time  | time(m) |  Load  |     TCP / RDMA  out  |   PIDs  ||  PIDs   | [UpTo] of [ToDo]\n";
+    print "        | Elapsed |   1m   |    [$IFN](MB/s)   | Running || Susp'd  |      Chunks       [$day]\n";
+    print "  Time  | time(m) |  Load  |     TCP / RDMA  out  |   PIDs  ||  PIDs   | [UpTo] of [ToDo] | Files Qd\n";
 }
 
 my $start_secs = `date  +"%s"`;
+# variables for storing throughput data
+my $cumRDMAsend = 0;
+my $cumTCPsend = 0;
+my $cumSecs = 0;
+my $el_min = 0;
+my $statsCounter = 0;
 
 while ( $CUR_FPI <= $NBR_FP_FLES || $FP_RUNNING || $STILLRSYNCS ) {
-  $rPIDs = "";
-
-  # print the header
-  if ( $hdr_cnt > $hdr_rpt ) {
-    my $glob = "${FP_ROOT}.*";
-    $hdr_cnt          = 0;
+    $rPIDs = "";
+    
+    # print the header
+    if ( $hdr_cnt > $hdr_rpt ) {
+	my $glob = "${FP_ROOT}.*";
+	$hdr_cnt          = 0;
+	$nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`;
+	chomp $nbr_cur_fpc_fles;
+	$day = `date +"%F"`;
+	chomp $day;
+	if ( $VERBOSE > 1 ) {
+	    print "        | Elapsed |   1m   |    [$IFN]   MB/s  | Running || Susp'd  |      Chunks       [$day]\n";
+	    print "  Time  | time(m) |  Load  |     TCP / RDMA  out  |   PIDs  ||  PIDs   | [UpTo] of [ToDo]  | Files Qd\n";
+	}
+    }
+    
+    # if ($DEBUG) {debug(__LINE__,"sPIDs string = [$sPIDs]");}
+    ( $rPIDs, $crr ) = get_rPIDs( $PIDFILE, $sPIDs );
+    
+    # now get load, bw, etc, and start rsyncs on new chunkfiles or suspend them to
+    # load-balance
+    $loadavg     = `cat /proc/loadavg | tr -d '\n'`;    # What's the system load?
+    @SYSLOAD     = split( /\s+/, $loadavg );            # 1st 3 fields are 1, 5, 15m loads
+    $LOAD1mratio = $SYSLOAD[0] / $NCPUs;
+    
+    # print out current data with the date
+    $rPIDs =~ s/^\s+|\s+$//g;
+    $sPIDs =~ s/^\s+|\s+$//g;                           # trim leading & trailing whitespace
+    my $NrPIDs = my @Lr = split( /\s+/, $rPIDs );
+    my $NsPIDs = my @Ls = split( /\s+/, $sPIDs );
+    my $glob   = "${FP_ROOT}.*";
     $nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`;
     chomp $nbr_cur_fpc_fles;
-    $day = `date +"%F"`;
-    chomp $day;
-    if ( $VERBOSE > 1 ) {
-      print
-"        | Elapsed |   1m   |    [$IFN]   MB/s  | Running || Susp'd  |      Chunks       [$day]
-  Time  | time(m) |  Load  |     TCP / RDMA  out  |   PIDs  ||  PIDs   | [UpTo] of [ToDo]\n";
+    
+    # if fpart is done ($FPART_RUNNING = "")
+    # $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`; chomp $FPART_RUNNING;
+    #AND $CUR_FPI >= $nbr_cur_fpc_fles
+    # AND there aren't any $rPIDs AND there aren't any $sPIDs
+    # then I think we're done.
+    # check fpart to see if it's still running..
+    $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`;
+    chomp $FPART_RUNNING;
+    
+    if ( $rPIDs eq "" ) { $rPIDs = "-" }
+    my $rDATE = `date +"%T" | sed 's/:/./g' `;
+    chomp $rDATE;
+    
+    # check cycles, print if exceed then reset counter.
+    if ( $cyclecnt++ > ( $CHECKPERIOD - 4 ) ) {
+	my $avgTCPsend;
+	if ($Linux) {
+	    ( $avgTCPrecv, $avgTCPsend, $avgRDMArecv, $avgRDMAsend ) =
+		getavgnetbw( $NETIF, $CHECKPERIOD, $PERFQUERY );
+	    chomp $avgTCPsend;
+	    $avgTCPsend = ( $avgTCPsend / 1048576 );    # convert to MB
+	    $cumTCPsend += $avgTCPsend;
+	    chomp $avgRDMAsend;
+	    $avgRDMAsend = ( $avgRDMAsend / 262144 );  # convert to MB; use same divisor as rdma-tct-stats
+	    $cumRDMAsend += $avgRDMAsend;
+	    $statsCounter++;
+	} else {
+	    my $RDMA_T1  = my $RDMA_T2 = 0;
+	    my $o1_bytes = `netstat -bi | grep $myIP | awk '{print \$10}'`;
+	    sleep $CHECKPERIOD;
+	    my $o2_bytes = `netstat -bi | grep $myIP | awk '{print \$10}'`;
+	    $avgTCPsend = ( $o2_bytes - $o1_bytes ) / $CHECKPERIOD / 1048576;    # (1024^2)
+	}
+	my $cur_secs = `date +"%s"`;
+	$el_min   = ( $cur_secs - $start_secs ) / 60;
+	
+	# this should switch from scrolling to overwrite when VERBOSE < 2
+	# print out the line
+	if ( $VERBOSE > 0 ) {
+	    printf "%8s   %5.2f    %5.2f  %9.2f / %-9.2f      %2d    <>  %2d          [%d] of [%d]     %d",
+	    $rDATE, $el_min, $SYSLOAD[0], $avgTCPsend, $avgRDMAsend, $NrPIDs, $NsPIDs, $CUR_FPI,
+	    $nbr_cur_fpc_fles, $cumFiles;
+	}
+	
+	# and then over-write it or add a newline for scrolling data.
+	if    ( $VERBOSE == 1 ) { 
+	    printf "\r"; 
+	}
+	elsif ( $VERBOSE >= 2 ) { 
+	    printf "\n"; 
+	}
+	$cyclecnt = 0;
+	$hdr_cnt++;
     }
-  }
-
-  # if ($DEBUG) {debug(__LINE__,"sPIDs string = [$sPIDs]");}
-  ( $rPIDs, $crr ) = get_rPIDs( $PIDFILE, $sPIDs );
-
-  # now get load, bw, etc, and start rsyncs on new chunkfiles or suspend them to
-  # load-balance
-  $loadavg     = `cat /proc/loadavg | tr -d '\n'`;    # What's the system load?
-  @SYSLOAD     = split( /\s+/, $loadavg );            # 1st 3 fields are 1, 5, 15m loads
-  $LOAD1mratio = $SYSLOAD[0] / $NCPUs;
-
-  # print out current data with the date
-  $rPIDs =~ s/^\s+|\s+$//g;
-  $sPIDs =~ s/^\s+|\s+$//g;                           # trim leading & trailing whitespace
-  my $NrPIDs = my @Lr = split( /\s+/, $rPIDs );
-  my $NsPIDs = my @Ls = split( /\s+/, $sPIDs );
-  my $glob   = "${FP_ROOT}.*";
-  $nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`;
-  chomp $nbr_cur_fpc_fles;
-
-  # if fpart is done ($FPART_RUNNING = "")
-  # $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`; chomp $FPART_RUNNING;
-  #AND $CUR_FPI >= $nbr_cur_fpc_fles
-  # AND there aren't any $rPIDs AND there aren't any $sPIDs
-  # then I think we're done.
-  # check fpart to see if it's still running..
-  $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`;
-  chomp $FPART_RUNNING;
-
-  if ( $rPIDs eq "" ) { $rPIDs = "-" }
-  my $rDATE = `date +"%T" | sed 's/:/./g' `;
-  chomp $rDATE;
-
-  # check cycles, print if exceed then reset counter.
-  if ( $cyclecnt++ > ( $CHECKPERIOD - 4 ) ) {
-    my $avgTCPsend;
-    if ($Linux) {
-      ( $avgTCPrecv, $avgTCPsend, $avgRDMArecv, $avgRDMAsend ) =
-        getavgnetbw( $NETIF, $CHECKPERIOD, $PERFQUERY );
-      chomp $avgTCPsend;
-      $avgTCPsend = ( $avgTCPsend / 1048576 );    # convert to MB
-      chomp $avgRDMAsend;
-      $avgRDMAsend = ( $avgRDMAsend / 262144 );  # convert to MB; use same divisor as rdma-tct-stats
-    } else {
-      my $RDMA_T1  = my $RDMA_T2 = 0;
-      my $o1_bytes = `netstat -bi | grep $myIP | awk '{print \$10}'`;
-      sleep $CHECKPERIOD;
-      my $o2_bytes = `netstat -bi | grep $myIP | awk '{print \$10}'`;
-      $avgTCPsend = ( $o2_bytes - $o1_bytes ) / $CHECKPERIOD / 1048576;    # (1024^2)
-    }
-    my $cur_secs = `date +"%s"`;
-    my $el_min   = ( $cur_secs - $start_secs ) / 60;
-
-    # this should switch from scrolling to overwrite when VERBOSE < 2
-    # print out the line
-    if ( $VERBOSE > 0 ) {
-      printf "%8s   %5.2f    %5.2f  %9.2f / %-9.2f       %2d    <>  %2d          [%d] of [%d]",
-        $rDATE, $el_min, $SYSLOAD[0], $avgTCPsend, $avgRDMAsend, $NrPIDs, $NsPIDs, $CUR_FPI,
-        $nbr_cur_fpc_fles;
-    }
-
-    # and then over-write it or add a newline for scrolling data.
-    if    ( $VERBOSE == 1 ) { printf "\r"; }
-    elsif ( $VERBOSE >= 2 ) { printf "\n"; }
-    $cyclecnt = 0;
-    $hdr_cnt++;
-  }
-  my $warncount = 0;
-  ### INSERT test to check that $nbr_cur_fpc_fles is < 20,000.
-  if ( $nbr_cur_fpc_fles > $WARN_FPART_FILES && $warncount < 1 ) {
-    if ( $VERBOSE >= 2 ) {
-      WARN(
-        "You've exceeded [$WARN_FPART_FILES] chunk files.  
+    my $warncount = 0;
+    ### INSERT test to check that $nbr_cur_fpc_fles is < 20,000.
+    if ( $nbr_cur_fpc_fles > $WARN_FPART_FILES && $warncount < 1 ) {
+	if ( $VERBOSE >= 2 ) {
+	    WARN(
+		"You've exceeded [$WARN_FPART_FILES] chunk files.  
 Are you sure you've set the chunk size (--chunksize) appropriately for this transfer?
 If the count goes to [$MAX_FPART_FILES], this transfer will abort. See the help about this.
 "
-      );
-      $warncount++;
-    }
-    if ( $nbr_cur_fpc_fles > $MAX_FPART_FILES && !$SKIP_FPART_CHECK ) {
-      FATAL(
-        "You've now exceeded [$MAX_FPART_FILES] chunk files, the maximum 
+		);
+	    $warncount++;
+	}
+	if ( $nbr_cur_fpc_fles > $MAX_FPART_FILES && !$SKIP_FPART_CHECK ) {
+	    FATAL(
+		"You've now exceeded [$MAX_FPART_FILES] chunk files, the maximum 
 recommended for this utility. Please increase the '--chunksize' 
 parameter significantly. If there's a good reason for exceeding it, 
 you can force the internal limit to be ignored by specifying it as 
 a negative number (--chunksize -10GB) the next time. However if you 
 do this, you will probably run into the string limit for 'ls'.
 "
-      );
-    }
-  }
-
-### SUSPEND OR CONTINUE RSYNCS for LOADBALANCING
-  if ( $SYSLOAD[0] > $MAXLOAD ) {
-
-    # suspend a PID; then loop as normal. If still high, will continue to
-    # suspend PIDs until there's none left.
-    if ($DEBUG) {
-      debug( __LINE__,
-"System load [$SYSLOAD[0]] is > MAXLOAD [$MAXLOAD].  Will try to suspend a running rsync to shed load."
-      );
-    }
-
-    # reassign a new list from ONLY RUNNING PIDs to $rPIDs (refresh $rPIDs)
-    # this cmd picks up both suspended and running PIDs- have to remove the suspended ones.
-    # in an efficient way.
-    if ( $rPIDs =~ /\d+/ ) { $rPIDs = `ps -p $rPIDs | grep -v PID| cut -c 1-5 | tr '\n' ' '`; }
-    $rPIDs =~ s/^\s+|\s+$//g;    # trim leading and trailing
-                                 # turn it into an array - (-> sub?)
-    my $rn = my @ra = split( /\s+/, $rPIDs );
-    my $sn = my @sa = split( /\s+/, $sPIDs );
-    for ( my $r = 0 ; $r < $rn ; $r++ ) {
-      for ( my $s = 0 ; $s < $sn ; $s++ ) {
-        if ( $ra[$r] eq $sa[$s] ) { $rPIDs =~ s/$ra[$r]//g; }    # delete it from $rPIDs
-      }
-    }
-
-  #if ($DEBUG) {debug(__LINE__, "string rPIDs = [$rPIDs]");}
-  # picks up both suspended and running PIDs and the new result has to have something in it as well.
-    if ( $rPIDs =~ /\d+/ ) {    # if any still left
-      my $N = my @raPIDs = split( /\s+/, $rPIDs );
-      my $e = 0;                # @raPIDs = temp array to carry currently running PIDs
-      while ( $e <= $N && $raPIDs[$e] !~ /\d+/ ) { $e++ }
-      if ($DEBUG) { debug( __LINE__, "[suspend] got one: [$raPIDs[$e]]; will now suspend it." ); }
-      kill 'STOP', $raPIDs[$e];
-
-      $susp_cnt++;
-      print SUSLOG "Suspend  \t$susp_cnt\t($unsusp_cnt)\t$raPIDs[$e]\n";
-
-      if ( $sPIDs !~ /$raPIDs[$e]/ ) {    # If it's not there already
-        $sPIDs = "$sPIDs" . ' ' . "$raPIDs[$e]";    # transfer rPID to sPID.
-        $rPIDs =~ s/$raPIDs[$e]//g;                 # only then delete that PID fr the rPID string
-      }
-    } else {    # there aren't any more PIDs left - all done or killed off.'
-      if ( $VERBOSE >= 2 ) { WARN("No more running rsync PIDs left."); }
-    }
-  } elsif ( $sPIDs =~ /\d+/ ) {    # if there are sPIDs, unsuspend them one by one
-                                   # split em
-    my $N = my @saPIDs = split( /\s+/, $sPIDs );
-    my $e = 0;
-    while ( $e <= $N && $saPIDs[$e] !~ /\d+/ ) { $e++ }
-    if ($DEBUG) { debug( __LINE__, "[unsuspend] got one: [$saPIDs[$e]]; will now UNsuspend it." ); }
-    kill 'CONT', $saPIDs[$e];
-
-    $unsusp_cnt++;
-    print SUSLOG "UNsuspend\t$unsusp_cnt\t($susp_cnt)\t$saPIDs[$e]\n";
-    $rPIDs = "$rPIDs" . ' ' . "$saPIDs[$e]";    # transfer sPID to rPID.
-    $sPIDs =~ s/$saPIDs[$e]//g;                 # delete that PID fr the sPID string
-  }    # end of 'SUSPEND OR CONTINUE to LOADBALANCE.' test loop
-       # and if neither of those conditions are met, then we can launch another rsync.
-  elsif ( $crr < $NP ) {    # then launch another rsync with the next fpart chunkfile
-    $CUR_FP_FLE = "${FP_ROOT}.${CUR_FPI}";    # generate the next fpart chunk file with $CUR_FPI
-         # if fpart is still going, wait for the next chunkfile to show up
-    my $cfw = 0;
-    my $cfwflag = 0;
-    $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`;
-    chomp $FPART_RUNNING;
-    while ( !-e $CUR_FP_FLE && $FPART_RUNNING eq '1' ) {
-      if ( $VERBOSE >= 2 ) { 
-	  if (!$NOSPINZONE) {
-	      INFO("Waiting [$cfw]s for next chunkfile..\r"); 
-	  } else {
-	      $cfwflag = 1;
-	  }
-	  sleep 2; 
-	  $cfw += 2; 
-      }
-      $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`;
-      chomp $FPART_RUNNING;
-    }
-    if ($cfwflag) {
-	if ( $VERBOSE >= 2 ) { 
-	    INFO("Waited [$cfw]s for next chunkfile..\n"); 
+		);
 	}
     }
     
-    if ($DEBUG) { debug( __LINE__, "sPIDs string = [$sPIDs]" ); }
-    ( $rPIDs, $crr ) = get_rPIDs( $PIDFILE, $sPIDs );
-    my $n    = my @a = split( /\s+/, $rPIDs );
-    my $R2SU = $NP - $n;                         # this is the number of rsyncs to start up
-    $glob = "${FP_ROOT}.*";
-    my $nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`;
-    chomp $nbr_cur_fpc_fles;
-
-    # $fparts_already_running will be '' if it's finished running.
-    my $fparts_already_running = `ps ux | grep 'fpar[t]'`;
-    chomp $fparts_already_running;
-
-    # Check this more carefully for exceptions - this is the drop-dead error point
-    # in some situations
-    for ( $n = 0 ; $n < $R2SU ; $n++ ) {
-
-      # make sure we haven't finished
-      $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`;
-      chomp $FPART_RUNNING;
-
-      if ( $rPIDs eq "" && $sPIDs eq "" && $CUR_FPI >= $nbr_cur_fpc_fles && $FPART_RUNNING == 0 ) {
-
-        # then we're done - exit.
-        if ( $VERBOSE >= 2 ) {
-          INFO(
-            "Done.  Please check the target to make sure 
+### SUSPEND OR CONTINUE RSYNCS for LOADBALANCING
+    if ( $SYSLOAD[0] > $MAXLOAD ) {
+	
+	# suspend a PID; then loop as normal. If still high, will continue to
+	# suspend PIDs until there's none left.
+	if ($DEBUG) {
+	    debug( __LINE__,
+		   "System load [$SYSLOAD[0]] is > MAXLOAD [$MAXLOAD].  Will try to suspend a running rsync to shed load."
+		);
+	}
+	
+	# reassign a new list from ONLY RUNNING PIDs to $rPIDs (refresh $rPIDs)
+	# this cmd picks up both suspended and running PIDs- have to remove the suspended ones.
+	# in an efficient way.
+	if ( $rPIDs =~ /\d+/ ) { $rPIDs = `ps -p $rPIDs | grep -v PID| cut -c 1-5 | tr '\n' ' '`; }
+	$rPIDs =~ s/^\s+|\s+$//g;    # trim leading and trailing
+	# turn it into an array - (-> sub?)
+	my $rn = my @ra = split( /\s+/, $rPIDs );
+	my $sn = my @sa = split( /\s+/, $sPIDs );
+	for ( my $r = 0 ; $r < $rn ; $r++ ) {
+	    for ( my $s = 0 ; $s < $sn ; $s++ ) {
+		if ( $ra[$r] eq $sa[$s] ) { $rPIDs =~ s/$ra[$r]//g; }    # delete it from $rPIDs
+	    }
+	}
+	
+	#if ($DEBUG) {debug(__LINE__, "string rPIDs = [$rPIDs]");}
+	# picks up both suspended and running PIDs and the new result has to have something in it as well.
+	if ( $rPIDs =~ /\d+/ ) {    # if any still left
+	    my $N = my @raPIDs = split( /\s+/, $rPIDs );
+	    my $e = 0;                # @raPIDs = temp array to carry currently running PIDs
+	    while ( $e <= $N && $raPIDs[$e] !~ /\d+/ ) { $e++ }
+	    if ($DEBUG) { debug( __LINE__, "[suspend] got one: [$raPIDs[$e]]; will now suspend it." ); }
+	    kill 'STOP', $raPIDs[$e];
+	    
+	    $susp_cnt++;
+	    print SUSLOG "Suspend  \t$susp_cnt\t($unsusp_cnt)\t$raPIDs[$e]\n";
+	    
+	    if ( $sPIDs !~ /$raPIDs[$e]/ ) {    # If it's not there already
+		$sPIDs = "$sPIDs" . ' ' . "$raPIDs[$e]";    # transfer rPID to sPID.
+		$rPIDs =~ s/$raPIDs[$e]//g;                 # only then delete that PID fr the rPID string
+	    }
+	} else {    # there aren't any more PIDs left - all done or killed off.'
+	    if ( $VERBOSE >= 2 ) { WARN("No more running rsync PIDs left."); }
+	}
+    } elsif ( $sPIDs =~ /\d+/ ) {    # if there are sPIDs, unsuspend them one by one
+	# split em
+	my $N = my @saPIDs = split( /\s+/, $sPIDs );
+	my $e = 0;
+	while ( $e <= $N && $saPIDs[$e] !~ /\d+/ ) { $e++ }
+	if ($DEBUG) { debug( __LINE__, "[unsuspend] got one: [$saPIDs[$e]]; will now UNsuspend it." ); }
+	kill 'CONT', $saPIDs[$e];
+	
+	$unsusp_cnt++;
+	print SUSLOG "UNsuspend\t$unsusp_cnt\t($susp_cnt)\t$saPIDs[$e]\n";
+	$rPIDs = "$rPIDs" . ' ' . "$saPIDs[$e]";    # transfer sPID to rPID.
+	$sPIDs =~ s/$saPIDs[$e]//g;                 # delete that PID fr the sPID string
+    }    # end of 'SUSPEND OR CONTINUE to LOADBALANCE.' test loop
+    # and if neither of those conditions are met, then we can launch another rsync.
+    elsif ( $crr < $NP ) {    # then launch another rsync with the next fpart chunkfile
+	$CUR_FP_FLE = "${FP_ROOT}.${CUR_FPI}";    # generate the next fpart chunk file with $CUR_FPI
+	# if fpart is still going, wait for the next chunkfile to show up
+	my $cfw = 0;
+	my $cfwflag = 0;
+	$FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`;
+	chomp $FPART_RUNNING;
+	while ( !-e $CUR_FP_FLE && $FPART_RUNNING eq '1' ) {
+	    if ( $VERBOSE >= 2 ) { 
+		if (!$NOSPINZONE) {
+		    INFO("Waiting [$cfw]s for next chunkfile..\r"); 
+		} else {
+		    $cfwflag = 1;
+		}
+		sleep 2; 
+		$cfw += 2; 
+	    }
+	    $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`;
+	    chomp $FPART_RUNNING;
+	}
+	if ($cfwflag) {
+	    if ( $VERBOSE >= 2 ) { 
+		INFO("Waited [$cfw]s for next chunkfile..\n"); 
+	    }
+	}
+	
+	if ($DEBUG) { debug( __LINE__, "sPIDs string = [$sPIDs]" ); }
+	( $rPIDs, $crr ) = get_rPIDs( $PIDFILE, $sPIDs );
+	my $n    = my @a = split( /\s+/, $rPIDs );
+	my $R2SU = $NP - $n;                         # this is the number of rsyncs to start up
+	$glob = "${FP_ROOT}.*";
+	my $nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`;
+	chomp $nbr_cur_fpc_fles;
+	
+	# $fparts_already_running will be '' if it's finished running.
+	my $fparts_already_running = `ps ux | grep 'fpar[t]'`;
+	chomp $fparts_already_running;
+	
+	# Check this more carefully for exceptions - this is the drop-dead error point
+	# in some situations
+	for ( $n = 0 ; $n < $R2SU ; $n++ ) {
+	    
+	    # make sure we haven't finished
+	    $FPART_RUNNING = `ps ux | grep fpar[t] | grep $FPART_PID | wc -l`;
+	    chomp $FPART_RUNNING;
+	    
+	    if ( $rPIDs eq "" && $sPIDs eq "" && $CUR_FPI >= $nbr_cur_fpc_fles && $FPART_RUNNING == 0 ) {
+		# then we're done - exit.
+		if ( $VERBOSE >= 2 ) {
+		    INFO(
+			"Done.  Please check the target to make sure 
   expected files are where they're supposed to be.\n"
-          );
-        }
-
-        # remind user how much storage the cache takes and to clear the cache files
-        # calculate bytes transferred from rsync logs ('$bytefiles')
-        $bytefiles .= "\*";    # to make it a glob
-        $bytesxf =
-`grep 'bytes  total size' $bytefiles | scut -f=11 | stats --quiet  | grep Sum | scut -f=1`;
-        chomp $bytesxf;
-
-      #my $bytesxf=`grep 'bytes  total size' $bytefiles | scut -f=4 | stats | grep Sum | scut -f=1`;
-        if ( $bytesxf < 1073741824 ) {    # if < GB, present as MB
-          $rprtnbr = $bytesxf / 1048576;
-          $sfx     = "MB";                 # for MB
-        } elsif ( $bytesxf < 1.09951162778e+12 ) {    # if < TB, present as GB
-          $rprtnbr = $bytesxf / 1073741824;
-          $sfx     = "GB";                            # for GB
-        } else {                                      # present in TB
-          $rprtnbr = $bytesxf / 1.09951162778e+12;
-          $sfx     = "TB";                            # for TB;
-        }
-        $ALLBYTES = sprintf( "%9.5f %2s", $rprtnbr, $sfx );
-
-        my $du_cache = `du -sh $parsync_dir`;
-        chomp $du_cache;
-        if ( $VERBOSE >= 2 ) {
-          INFO( "
+			);
+		    
+		    
+		    # remind user how much storage the cache takes and to clear the cache files
+		    # calculate bytes transferred from rsync logs ('$bytefiles')
+		    $bytefiles .= "\*";    # to make it a glob
+		    $bytesxf =
+			`grep 'bytes  total size' $bytefiles | scut -f=11 | stats --quiet  | grep Sum | scut -f=1`;
+		    chomp $bytesxf;
+		    
+		    #my $bytesxf=`grep 'bytes  total size' $bytefiles | scut -f=4 | stats | grep Sum | scut -f=1`;
+		    if ( $bytesxf < 1073741824 ) {    # if < GB, present as MB
+			$rprtnbr = $bytesxf / 1048576;
+			$sfx     = "MB";                 # for MB
+		    } elsif ( $bytesxf < 1.09951162778e+12 ) {    # if < TB, present as GB
+			$rprtnbr = $bytesxf / 1073741824;
+			$sfx     = "GB";                            # for GB
+		    } else {                                      # present in TB
+			$rprtnbr = $bytesxf / 1.09951162778e+12;
+			$sfx     = "TB";                            # for TB;
+		    }
+		    $ALLBYTES = sprintf( "%9.5f %2s", $rprtnbr, $sfx );
+		    
+		    my $du_cache = `du -sh $parsync_dir`;
+		    chomp $du_cache;
+		    my $finalRDMAavg = sprintf("%.2f", $cumRDMAsend / $statsCounter);
+		    my $finalTCPavg = sprintf("%.2f", $cumTCPsend / $statsCounter);
+		    my $avgFileSize = int(($bytesxf / $cumFiles)/1048576);
+		    INFO( "
     The parsyncfp cache dir takes up [$du_cache]
     Don't forget to delete it, but wait until you are sure that your job
     completed correctly, so you don't need the log files anymore.
@@ -1020,74 +1036,79 @@ and the fpart log:
   [$FPART_LOGFILE] 
 for errors. Use '--verbose=1' for less output.
 You transferred [$bytesxf bytes = $ALLBYTES] via all [$NP] rsyncs.
+
+PerfStats: Bytes; $bytesxf: Files; $cumFiles: Avg file size; $avgFileSize MB: RDMA throughput; $finalRDMAavg MB/s: TCP throughput; $finalTCPavg MB/s
     
       Thanks for using parsyncfp. Tell me how to make it better.
                        <hjmangalam\@gmail.com>\n\n" );
-        }
-	syslog ("notice", "parsyncfp process complete for user $USER");
-        exit;
-      }
-      my $spinc = 0;
-      my $fpartwaitflag = 0;
-      while ( ( $CUR_FPI >= $nbr_cur_fpc_fles ) && $fparts_already_running ne '' ) {
-	  #when things are being written to a file the log can get filled with spinners and 
-	  # other dreck. This doesn't work all that great in a slurm situation -cjr
-	  if ($DEBUG) {
-	      debug( __LINE__, "CUR_FPI=$CUR_FPI >= nbr_cur_fpc_fles=$nbr_cur_fpc_fles?" );
-	  }
-	  if ($NOSPINZONE) {
-	      if ( $VERBOSE >= 2 && !$fpartwaitflag) { 
-		  my $time = strftime "%a %b %e %H:%M:%S", localtime;
-		  INFO("$time: Waiting for fpart to get ahead of the transfer.\n");
-		  $fpartwaitflag = 1;
-	      }
-	  } else {
-	      if ( $VERBOSE >= 2 ) { INFO("Waiting for fpart to get ahead of the transfer..[$spinner[$spinc]]\r"); }
-	      if ($spinc > 2) {$spinc=0} else {$spinc++;}
-	  }
-	  $nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`; 
-	  chomp $nbr_cur_fpc_fles;
-	  $fparts_already_running = `ps ux | grep 'fpar[t]'`; 
-	  chomp $fparts_already_running;
-	  sleep 2;
-      }
-      if ($fpartwaitflag) {
-	  my $time = strftime "%a %b %e %H:%M:%S", localtime;
-	  INFO("$time: Fpart is ahead of the transfer now\n");
-	  #fpartwaitflag is explicitly set to 0 previously.
-      }
-      $logfile = $parsync_dir . '/' . "rsync-logfile-" . $DATE . "_" . $CUR_FPI;
-      $CUR_FP_FLE = "${FP_ROOT}.${CUR_FPI}";    # generate the next fpart chunk file with $CUR_FPI
-      $nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`;
-      chomp $nbr_cur_fpc_fles;
-      $RSYNC_CMD =
-"cd $TRIMPATH && rsync  --bwlimit=$MAXBW -a -s --log-file=$logfile $RSYNCOPTS  --files-from=$CUR_FP_FLE  $ROOTDIR  $TARGET & echo \"\${!}\" >> $PIDFILE";
-      if ($DEBUG) { debug( __LINE__, "Starting [$RSYNC_CMD]" ); }
-
-# check status in a 1s loop checking to start extra rsyncs do we don't wait any more than 1s
-# OR keep cycling continuously on a 1s loop and ONLY print out info every X cycles.  This is the easiest way.
-      if ( -e $CUR_FP_FLE ) {
-        fixfilenames( $CUR_FP_FLE, $ROOTDIR );    # check & fix for spaces, bad chars.
-        if ( $VERBOSE >= 3 ) {
-          my $tt = $CUR_FPI + 1;
-          INFO("next chunk [$tt] of [$nbr_cur_fpc_fles].\n");
-        }
-        system("$RSYNC_CMD");    # capture the bg job PID to PIDfile
-                                 #if ($DEBUG) {debug(__LINE__, "Starting [$RSYNC_CMD]"); }
-        $CUR_FPI++;
-      }
+		}
+		syslog ("notice", "parsyncfp process complete for user $USER");
+		exit;
+	    }
+	    my $spinc = 0;
+	    my $fpartwaitflag = 0;
+	    while ( ( $CUR_FPI >= $nbr_cur_fpc_fles ) && $fparts_already_running ne '' ) {
+		# when things are being written to a file the log can get filled with spinners and 
+		# other special characters. This doesn't work all that great in a slurm situation 
+		# when the output is being written to text log -cjr
+		if ($DEBUG) {
+		    debug( __LINE__, "CUR_FPI=$CUR_FPI >= nbr_cur_fpc_fles=$nbr_cur_fpc_fles?" );
+		}
+		if ($NOSPINZONE) {
+		    if ( $VERBOSE >= 2 && !$fpartwaitflag) { 
+			my $time = strftime "%a %b %e %H:%M:%S", localtime;
+			INFO("$time: Waiting for fpart to get ahead of the transfer.\n");
+			$fpartwaitflag = 1;
+		    }
+		} else {
+		    if ( $VERBOSE >= 2 ) { INFO("Waiting for fpart to get ahead of the transfer..[$spinner[$spinc]]\r"); }
+		    if ($spinc > 2) {$spinc=0} else {$spinc++;}
+		}
+		$nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`; 
+		chomp $nbr_cur_fpc_fles;
+		$fparts_already_running = `ps ux | grep 'fpar[t]'`; 
+		chomp $fparts_already_running;
+		sleep 2;
+	    }
+	    if ($fpartwaitflag) {
+		my $time = strftime "%a %b %e %H:%M:%S", localtime;
+		INFO("$time: Fpart is ahead of the transfer now\n");
+		#fpartwaitflag is explicitly set to 0 previously.
+	    }
+	    $logfile = $parsync_dir . '/' . "rsync-logfile-" . $DATE . "_" . $CUR_FPI;
+	    $CUR_FP_FLE = "${FP_ROOT}.${CUR_FPI}";    # generate the next fpart chunk file with $CUR_FPI
+	    $nbr_cur_fpc_fles = `\\ls -U1 $glob | wc -l`;
+	    chomp $nbr_cur_fpc_fles;
+	    $RSYNC_CMD =
+		"cd $TRIMPATH && rsync  --bwlimit=$MAXBW -a -s --log-file=$logfile $RSYNCOPTS  --files-from=$CUR_FP_FLE  $ROOTDIR  $TARGET & echo \"\${!}\" >> $PIDFILE";
+	    if ($DEBUG) { debug( __LINE__, "Starting [$RSYNC_CMD]" ); }
+	    
+	    # check status in a 1s loop checking to start extra rsyncs do we don't wait any more than 1s
+	    # OR keep cycling continuously on a 1s loop and ONLY print out info every X cycles.  This is the easiest way.
+	    if ( -e $CUR_FP_FLE ) {
+		fixfilenames( $CUR_FP_FLE, $ROOTDIR );    # check & fix for spaces, bad chars.
+		$cumFiles += `wc -l $CUR_FP_FLE`;
+		if ( $VERBOSE >= 3 ) {
+		    INFO("next chunk [" . $CUR_FPI + 1 . "] of [$nbr_cur_fpc_fles].\n");
+		}
+		system("$RSYNC_CMD");    # capture the bg job PID to PIDfile
+		#if ($DEBUG) {debug(__LINE__, "Starting [$RSYNC_CMD]"); }
+		$CUR_FPI++;
+	    }
+	}
+	if ($DEBUG) { 
+	    debug( __LINE__, "sPIDs string = [$sPIDs]" ); 
+	}
+	( $rPIDs, $crr ) = get_rPIDs( $PIDFILE, $sPIDs );
     }
-    if ($DEBUG) { debug( __LINE__, "sPIDs string = [$sPIDs]" ); }
-    ( $rPIDs, $crr ) = get_rPIDs( $PIDFILE, $sPIDs );
-  }
-
-  # sleep 1;
-  $NBR_FP_FLES = `\\ls -U1 ${FPCFS}* | wc -l`;
-  chomp $NBR_FP_FLES;            # get current # of chunks
-
-  # need to check both running and suspended PIDs
-  if   ( $rPIDs =~ /\d+/ || $sPIDs =~ /\d+/ ) { $STILLRSYNCS = 1; }
-  else                                        { $STILLRSYNCS = 0; }
+    
+    # sleep 1;
+    $NBR_FP_FLES = `\\ls -U1 ${FPCFS}* | wc -l`;
+    chomp $NBR_FP_FLES;            # get current # of chunks
+    
+    # need to check both running and suspended PIDs
+    if   ( $rPIDs =~ /\d+/ || $sPIDs =~ /\d+/ ) { $STILLRSYNCS = 1; }
+    else                                        { $STILLRSYNCS = 0; }
 }    # while ($CUR_FPI < $NBR_FP_FLES )
 
 my $host = `hostname`;
