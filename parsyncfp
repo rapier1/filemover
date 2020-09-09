@@ -766,12 +766,12 @@ if ( $VERBOSE == 0 ) {    #  ..............|---------- / ---------|
 }
 
 my $start_secs = `date  +"%s"`;
-# variables for storing throughput data
+# variables for storing performance data
 my $cumRDMAsend = 0;
 my $cumTCPsend = 0;
-my $cumSecs = 0;
 my $el_min = 0;
 my $statsCounter = 0;
+my $fpartwaittime = 0;
 
 while ( $CUR_FPI <= $NBR_FP_FLES || $FP_RUNNING || $STILLRSYNCS ) {
     $rPIDs = "";
@@ -1025,6 +1025,7 @@ do this, you will probably run into the string limit for 'ls'.
 		    my $finalRDMAavg = sprintf("%.2f", $cumRDMAsend / $statsCounter);
 		    my $finalTCPavg = sprintf("%.2f", $cumTCPsend / $statsCounter);
 		    my $avgFileSize = int(($bytesxf / $cumFiles)/1048576);
+		    my $el_sec = $el_min * 60;
 		    INFO( "
     The parsyncfp cache dir takes up [$du_cache]
     Don't forget to delete it, but wait until you are sure that your job
@@ -1037,7 +1038,7 @@ and the fpart log:
 for errors. Use '--verbose=1' for less output.
 You transferred [$bytesxf bytes = $ALLBYTES] via all [$NP] rsyncs.
 
-PerfStats: Bytes; $bytesxf: Files; $cumFiles: Avg file size; $avgFileSize MB: RDMA throughput; $finalRDMAavg MB/s: TCP throughput; $finalTCPavg MB/s
+PerfStats: Time; $el_sec s: Wait; $fpartwaittime s: Bytes; $ALLBYTES: Files; $cumFiles: Avg FS; $avgFileSize MB: RDMA tput; $finalRDMAavg MB/s: TCP tput; $finalTCPavg MB/s
     
       Thanks for using parsyncfp. Tell me how to make it better.
                        <hjmangalam\@gmail.com>\n\n" );
@@ -1047,6 +1048,7 @@ PerfStats: Bytes; $bytesxf: Files; $cumFiles: Avg file size; $avgFileSize MB: RD
 	    }
 	    my $spinc = 0;
 	    my $fpartwaitflag = 0;
+	    my $fpartts = 0;
 	    while ( ( $CUR_FPI >= $nbr_cur_fpc_fles ) && $fparts_already_running ne '' ) {
 		# when things are being written to a file the log can get filled with spinners and 
 		# other special characters. This doesn't work all that great in a slurm situation 
@@ -1056,8 +1058,8 @@ PerfStats: Bytes; $bytesxf: Files; $cumFiles: Avg file size; $avgFileSize MB: RD
 		}
 		if ($NOSPINZONE) {
 		    if ( $VERBOSE >= 2 && !$fpartwaitflag) { 
-			my $time = strftime "%a %b %e %H:%M:%S", localtime;
-			INFO("$time: Waiting for fpart to get ahead of the transfer.\n");
+			$fpartts = time();
+			INFO("Waiting for fpart to get ahead of the transfer.\n");
 			$fpartwaitflag = 1;
 		    }
 		} else {
@@ -1071,8 +1073,9 @@ PerfStats: Bytes; $bytesxf: Files; $cumFiles: Avg file size; $avgFileSize MB: RD
 		sleep 2;
 	    }
 	    if ($fpartwaitflag) {
-		my $time = strftime "%a %b %e %H:%M:%S", localtime;
-		INFO("$time: Fpart is ahead of the transfer now\n");
+		my $fpartwait = time() - $fpartts;
+		INFO("Waited $fpartwait s for fpart.");
+		$fpartwaittime += $fpartwait;
 		#fpartwaitflag is explicitly set to 0 previously.
 	    }
 	    $logfile = $parsync_dir . '/' . "rsync-logfile-" . $DATE . "_" . $CUR_FPI;
