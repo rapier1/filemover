@@ -97,7 +97,6 @@ sub processRsync {
     
     #delete the fpart chache directory 
     while ($_ = glob("$dir/fpcache/*")) {
-	    print "$_\n";
 	    next if -d $_;
 	    unlink($_);
     }
