@@ -66,7 +66,7 @@ sub processUserLog {
     }
 
     my $address = "bridges-ft\@psc.edu";
-    my $subject = "Filemover performance stats for $user";
+    my $subject = "SUCCESS: Filemover performance stats for $user";
     my $from = "Filemover\@noreply.psc.edu";
     
     open(my $MAIL, "|/usr/sbin/sendmail -t");
@@ -98,7 +98,7 @@ sub processRsync {
     #delete the fpart chache directory 
     while ($_ = glob("$dir/fpcache/*")) {
 	    next if -d $_;
-	    unlink($_);
+	    #unlink($_);
     }
     rmdir "$dir/fpcache";
     
@@ -151,7 +151,7 @@ sub processRsync {
 	close (FH);
 	# no errors found in file so delete it
 	if ($errorflag == 0) {
-	    unlink($filepath);
+	    #unlink($filepath);
 	}
     }
     

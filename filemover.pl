@@ -58,6 +58,7 @@ EOF
 
 # read the configuration file and put everything into
 # the global config data structure
+# TODO: really need to add checks
 sub read_config {
     my $cfg_path = shift @_;
     if (! -e $cfg_path) {
@@ -281,6 +282,7 @@ mkdir -p $config->{paths}->{cache}/$username.psync.cache/$group
 $config->{paths}->{parsyncfp} -NP=$config->{parsyncopts}->{np} \\
 --user=$username \\
 --spinneroff \\
+--utilpath=$config->{paths}->{utilpath} \\
 -maxload=$config->{parsyncopts}->{maxload} \\
 -chunksize=$config->{parsyncopts}->{chunk_size} $nowait \\
 --rsyncopts='$config->{parsyncopts}->{rsyncopts}' \\
@@ -481,7 +483,7 @@ sub errorLog {
     print $usermsg . "\n";
     syslog ($level, $sysmsg);
     if ($level eq "crit") {
-	mailError($sysmsg, $level, $user);
+	mailError($sysmsg, "FATAL Error", $user);
 	print "Filemover is exiting.\n\n";
 	exit;
     }
@@ -505,7 +507,7 @@ sub mailError {
     print $MAIL "To: $address\n";
     print $MAIL "From: $from\n";
     print $MAIL "Subject: $subject\n";
-    print $MAIL "$user has encountered a problem with the filemover application\n";
+    print $MAIL "$user has encountered a $level in the filemover application\n\n";
     print $MAIL $msg . "\n";
     close ($MAIL);
 }
