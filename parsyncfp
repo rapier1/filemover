@@ -1057,6 +1057,10 @@ where they're supposed to be.\n"
 	my $finalTCPavg = sprintf("%.2f", $cumTCPsend / $statsCounter);
 	my $avgFileSize = int(($bytesxf / $cumFiles)/1048576);
 	my $el_sec = time() - $psfpStartTime;
+	#get the group name/ The group is the 2nd to last directory
+	my @dirpath = split "/", $ROOTDIR;
+	my $groupname = $dirpath[$#dirpath-1];
+
         if ( $VERBOSE >= 2 && $DISPOSE =~ /l/) {
           INFO( "
     The entire parsyncfp cache dir takes up [$du_cache]
@@ -1090,7 +1094,7 @@ the '--dispose' option [$DISPOSE].
             
 You rsync'ed [$bytesxf bytes = $ALLBYTES] via all [$NP] rsyncs.
 
-PerfStats: Time; $el_sec s: Wait; $fpartwaittime s: Bytes; $ALLBYTES: Files; $cumFiles: Avg FS; $avgFileSize MB: RDMA tput; $finalRDMAavg MB/s: TCP tput; $finalTCPavg MB/s            
+PerfStats: Group; $groupname: Time; $el_sec s: Wait; $fpartwaittime s: Bytes; $ALLBYTES: Files; $cumFiles: Avg FS; $avgFileSize MB: RDMA tput; $finalRDMAavg MB/s: TCP tput; $finalTCPavg MB/s            
             Thanks for using parsyncfp. Tell me how to make it better.
                             <hjmangalam\@gmail.com>\n\n" );
             }
