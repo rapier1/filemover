@@ -213,9 +213,9 @@ sub transport_command {
 	}
 	my $username = get_username();
 	$command .= "#copy parsyncfp log file for performance evaluation\n";
-	$command .= "cp \${SLURM_SUBMIT_DIR}/filemover_\${SLURM_JOB_ID}.log $config->{paths}->{cache}/$username.psync.cache/\n\n";
+	$command .= "cp \${SLURM_SUBMIT_DIR}/filemover_\${SLURM_JOB_ID}.log $config->{paths}->{cache}/$username.psync.cache/\${SLURM_JOB_ID}\n\n";
 	$command .= "#parse the user log file for performance data\n";
-	$command .= "$config->{paths}->{parsync_bindir}/logrunner.pl $config->{paths}->{cache}/$username.psync.cache $username \${SLURM_JOB_ID}\n\n";
+	$command .= "$config->{paths}->{parsync_bindir}/logrunner.pl $config->{paths}->{cache}/$username.psync.cache/\${SLURM_JOB_ID} $username \${SLURM_JOB_ID}\n\n";
 	return $command;
     }
     #if ($tool eq "tarpipe") {
@@ -277,7 +277,7 @@ sub build_pfp {
 mkdir -p $target
 
 #ensure that the cache diectory exists
-mkdir -p $config->{paths}->{cache}/$username.psync.cache/$group
+mkdir -p $config->{paths}->{cache}/$username.psync.cache/\${SLURM_JOB_ID}/$group
 
 $config->{paths}->{parsyncfp} -NP=$config->{parsyncopts}->{np} \\
 --user=$username \\
@@ -287,11 +287,11 @@ $config->{paths}->{parsyncfp} -NP=$config->{parsyncopts}->{np} \\
 -chunksize=$config->{parsyncopts}->{chunk_size} $nowait \\
 --rsyncopts='$config->{parsyncopts}->{rsyncopts}' \\
 --interface=$config->{parsyncopts}->{interface} \\
---altcache=$config->{paths}->{cache}/$username.psync.cache/$group \\
+--altcache=$config->{paths}->{cache}/$username.psync.cache/\${SLURM_JOB_ID}/$group \\
 --startdir='$startdir' $dirlist $target 
 
 #parse the rsync logs for failures. logrunner also clears the rsync logs
-$config->{paths}->{parsync_bindir}/logrunner.pl $config->{paths}->{cache}/$username.psync.cache/$group $username
+$config->{paths}->{parsync_bindir}/logrunner.pl $config->{paths}->{cache}/$username.psync.cache/\${SLURM_JOB_ID}/$group $username
 EOF
 
     $pfp = trim($pfp);
