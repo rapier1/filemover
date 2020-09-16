@@ -21,11 +21,28 @@ if (!$dir) {
 } 
 
 #### MAIN ####
+my $error;
+my $rsyncmsg;
+my $logmsg;
+my $subject;
+
 if (!$jobid) {
-    processRsync($username, $dir);
+    $rsyncmsg = processRsync($username, $dir);
+    if ($rsyncmsg) {
+	$subject = "ERROR: Rsync errors for $username";
+	mailResults($subject, $rsyncmsg);
+    }
 } else {
-    processUserLog($username, $jobid, $dir);
+    $logmsg =  "The filemover process for $username is complete.\n";
+    $logmsg .= "$rsyncmsg\n";
+    $logmsg .= " Summary performance stats follow.\n";
+    $logmsg .= "Please review the full log file at $dir/filemover_$jobid.log for more details\n\n";
+    $logmsg .= processUserLog($username, $jobid, $dir);
+    $subject = "SUCCESS: Filemover Perfomance Stats for $username";
+    mailResults($subject, $logmsg);
 }
+
+exit;
 
 ### SUBS ###
 sub FATAL {
@@ -40,7 +57,7 @@ sub WARN {
     my $msg = shift;
     my $uname = shift;
     print STDERR "WARNING: $msg\n";
-    syslog("warn", "ERROR for user $uname: $msg");
+    syslog("warning", "ERROR for user $uname: $msg");
 }
 
 sub processUserLog {
@@ -60,13 +77,19 @@ sub processUserLog {
 	if ($_ =~ "PerfStats") {
 	    # the line in question looks like
 	    # PerfStats: Bytes; 256629018624: Files; 239: Avg file size; 1024 MB: RDMA throughput; 623.93 MB/s: TCP throughput; 0.00 MB/s
-	    # it's set up for a split but at this point we are just sending mail
+	    # it's set up for a split but at this point we are just sending mail. Eventually I'd like to put this
+	    # all in a database. 
 	    $perfdata .= $_; #in case of multiple user groups
 	}
     }
+    return $perfdata;
+}
+
+sub mailResults {
+    my $subject = shift;
+    my $msg = shift;
 
     my $address = "bridges-ft\@psc.edu";
-    my $subject = "SUCCESS: Filemover performance stats for $user";
     my $from = "Filemover\@noreply.psc.edu";
     
     open(my $MAIL, "|/usr/sbin/sendmail -t");
@@ -79,10 +102,9 @@ sub processUserLog {
     print $MAIL "To: $address\n";
     print $MAIL "From: $from\n";
     print $MAIL "Subject: $subject\n";
-    print $MAIL "The filemover process for $user is complete. Summary performance stats follow.\n";
-    print $MAIL "Please review the full log file at $filepath for more details\n\n";
-    print $MAIL $perfdata . "\n";
+    print $MAIL $msg . "\n";
     close ($MAIL);
+    return;
 }
 
 sub processRsync {
@@ -94,12 +116,16 @@ sub processRsync {
     my @denied;
     my @vanished;
     my @allerrors;
+    my $errorflag;
     
     #delete the fpart chache directory 
     while ($_ = glob("$dir/fpcache/*")) {
 	    next if -d $_;
-	    #unlink($_);
+	    unlink($_);
     }
+
+    #remove the empty fpart cache directories
+    rmdir "$dir/fpcache/hold";
     rmdir "$dir/fpcache";
     
     #remove the suspend log
@@ -113,7 +139,7 @@ sub processRsync {
     
     #open each file in turn and look for errors
     foreach my $filepath (@logfiles) {    
-	my $errorflag = 0;
+	$errorflag = 0;
 	#print "Opening $filepath\n";
 	open (FH, "<", $filepath) or WARN("Cannot open logfile at $filepath", $user);
 	while (<FH>) {
@@ -151,39 +177,50 @@ sub processRsync {
 	close (FH);
 	# no errors found in file so delete it
 	if ($errorflag == 0) {
-	    #unlink($filepath);
+	    unlink($filepath);
 	}
     }
     
+    $errorflag = 0; #reuse var for email report
     open (OF, ">", "$dir/rsync_failure.log") or FATAL("Could not open rsync failure log in $dir", $user);
     
     print OF "rsync failure log for $user\n\n";
     print OF "Vanished:\n";
-    if ($#vanished == 0) {
+    if (scalar @vanished == 0) {
 	print OF "No vanished files for $user";
     } else {
 	print OF join ("\n", @vanished);
+	$errorflag = 1;
     }
     
     print OF "\nMissing:\n";
-    if ($#missing == 0) {
+    if (scalar @missing == 0) {
 	print OF "No missing files for $user";
     } else {
 	print OF join ("\n", @missing);
+	$errorflag = 1;
     }
     
     print OF "\nDenied:\n";
-    if ($#missing == 0) {
+    if (scalar @denied == 0) {
 	print OF "No missing files for $user";
     } else {
 	print OF join ("\n", @denied);
+	$errorflag = 1;
     }
     
     print OF "\nAll errors:\n";
-    if ($#allerrors == 0) {
+    if (scalar @allerrors == 0) {
 	print OF "No errors for $user";
     } else {
 	print OF join ("\n", @allerrors);
+	$errorflag = 1;
     }
     close (OF);
+
+    if ($errorflag) {
+	return ("Errors encountered in rsync log files. Please review rsync_failure.log in\n $dir\n");
+    } 
+
+    return;
 }
