@@ -1055,7 +1055,7 @@ where they're supposed to be.\n"
         chomp $du_cache;
 	my $finalRDMAavg = sprintf("%.2f", $cumRDMAsend / $statsCounter);
 	my $finalTCPavg = sprintf("%.2f", $cumTCPsend / $statsCounter);
-	my $avgFileSize = int(($bytesxf / $cumFiles)/1048576);
+	my $avgFileSize = sprintf("%.2f", (($bytesxf / $cumFiles)/1048576));
 	my $el_sec = time() - $psfpStartTime;
 	#get the group name/ The group is the 2nd to last directory
 	my @dirpath = split "/", $ROOTDIR;
