@@ -49,10 +49,11 @@ local $| = 1;
 ######################## 
 sub print_notice {
     print <<EOF;
-Welcome to the PSC file mover. This application will move your files
+
+Welcome to the PSC filemover tool. This application will copy your files
 to the Bridges 2 file storage system as a scheduled slurm job. We can
 provide no estimate on when the job will run or how long it will take
-move your files. 
+copy your files. 
 EOF
 }
 
@@ -129,7 +130,7 @@ sub check_filepaths {
     # want to transfer from each root path
     foreach my $group (sort keys %sources) {
 	$pathbase = $sources{$group}{'path'};
-	print "Enter a comma delimited list of the directories you would like to transfer\n";
+	print "\nEnter a comma delimited list of the directories you would like to transfer\n";
 	print "from the following base directory. If you would like to transfer everything\n";
 	print "enter a blank line. To skip this path enter 'skip'\n";
 	print "Base directory: $pathbase\n";
@@ -168,7 +169,7 @@ sub check_filepaths {
 		my $usermsg = "Error: You chose to not continue. Your files will not be transferred.\n";
 		my $sysmsg = "Error: User halted filemover in check_filepaths.";
 		my $user = get_username();
-		errorLog ($sysmsg, $usermsg, "warn", $user);
+		errorLog ($sysmsg, $usermsg, "warning", $user);
 		exit; #explicit exit because 'warn' doesn't exit and we don't want to send mail to support
 	    } 
 	}
@@ -180,7 +181,7 @@ sub check_filepaths {
 	my $usermsg = "Error: You have not selected any directories to transfer. Your files will not be transferred.\n";
 	my $sysmsg = "Error: User didn't select any directories to transfer.";
 	my $user = get_username();
-	errorLog ($sysmsg, $usermsg, "warn", $user);	
+	errorLog ($sysmsg, $usermsg, "warning", $user);	
 	exit; #explicit exit because 'warn' doesn't exit and we don't want to send mail to support
     }
     return \%sources;
@@ -459,9 +460,9 @@ sub trim {
 sub usage {
     print "filemover usage\n";
     print "\tfilemover.pl [-d 'comma,sereparated,directory,list'] [-t] [-f] [-h]\n";
-    print "\t-d quoted comma separated list of directories to move (relative to \$SCRATCH[?])\n";
+    print "\t-d quoted comma separated list of directories to copy (relative to \$SCRATCH[?])\n";
     print "\t   these directories must be readable by the user\n";
-    print "\t=m Move user home directory\n";
+    print "\t=m Copy user home directory\n";
     print "\t-t Use tar and pipe instead of parsyncfp. Not recommended.\n";
     print "\t-f Use fpsync instead of parsyncfp.\n";
     print "\t-h this help text\n";
