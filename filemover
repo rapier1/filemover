@@ -28,6 +28,9 @@ use Capture::Tiny qw(:all); #get the results of system commands
 use File::HomeDir; # get the users home directory. More reliable than env data
 use Data::Dumper; # debugging purposes
 use Sys::Syslog; #logging facility
+use JSON; # for parsing the group translation data
+use HTTP::Tiny; # for getting the group translation data
+use Try::Tiny;
 
 openlog("FILEMOVER", "pid", "LOG_USER");
 
@@ -92,6 +95,7 @@ sub check_filepaths {
     # sources -> groupname (char)
     #              ->{'path'} base directory path (char)
     #              ->{'dirs'} array of dirs (array)
+    #              ->{'newgroup'} translated group used to build target path
 
     # first we get the base file path
     my $username = get_username();
@@ -111,11 +115,29 @@ sub check_filepaths {
     my @groups = split ("\n", $gid);
 
     #check each entry in the array and see if it corresponds to a valid path
+
+    print "\nChecking groups and paths:\n";
+
     foreach $gid (@groups) {
-	$pathbase = "$config->{filesystem}->{outbound}/$gid/$username";
-	if (-e $pathbase) {
-	    # it does so add it to our hash
-	    $sources{$gid}{'path'} = $pathbase;
+	# get the new group name on the target filesystem
+	# if it doesn't exist spit a warning and move to the next
+	my $newgroup = translateGroup($gid);
+	#yes we are evaluating it as a string. get over it. 
+	if ($newgroup eq "-1") {
+	    my $usermsg = "Error: Unfortunately the group $gid doesn't seem to be valid on $config->{filesystem}->{inbound}.\n";
+	    $usermsg   .= "We will continue with any other groups you may be a member of.\n";
+	    $usermsg   .= "Please contact $config->{support}->{email}. If this is in error.\n";
+	    my $sysmsg = "Error: User group $gid does not exist on $config->{filesystem}->{inbound}";
+	    errorLog ($sysmsg, $usermsg, "warning", $username);
+	} else {
+	    #group exists on target so makes sude the root directory exists locally
+	    $pathbase = "$config->{filesystem}->{outbound}/$gid/$username";
+	    if (-e $pathbase) {
+		# it does so add it to our hash
+		$sources{$gid}{'path'} = $pathbase;
+		$sources{$gid}{'newgroup'} = $newgroup;
+		print "$config->{filesystem}->{outbound}/$gid/$username will be copied to $config->{filesystem}->{inbound}/$newgroup/$username\n"; 
+	    }
 	}
     }
 
@@ -175,7 +197,7 @@ sub check_filepaths {
 	}
     }
 
-    # after goign through all of that they must have skipped all of their
+    # after going through all of that they must have skipped all of their
     # root directories. Whatever. Warn them and exit. 
     if (scalar keys %sources == 0) {
 	my $usermsg = "Error: You have not selected any directories to transfer. Your files will not be transferred.\n";
@@ -204,13 +226,14 @@ sub transport_command {
 	foreach my $group (keys %sources) {
 	    $base = $sources{$group}{'path'};
 	    $dirlist = ""; #have to set it to null otherwise it inherits the last set value
+	    my $newgroup = $sources{$group}{'newgroup'};
 	    if ($sources{$group}{'dirs'}) {
 		$dirlist = join " ", @{$sources{$group}{'dirs'}};
 	    }
 	    # we can now build the parsyncfp directory line
 	    # with $base $dirlist and if the dirlist is empty we
 	    # still have a a valid argument
-	    $command .= build_pfp($base, $dirlist, $group) . "\n\n";
+	    $command .= build_pfp($base, $dirlist, $group, $newgroup) . "\n\n";
 	}
 	my $username = get_username();
 	$command .= "#copy parsyncfp log file for performance evaluation\n";
@@ -242,6 +265,7 @@ sub build_pfp {
     my $startdir = shift @_;
     my $dirlist = shift @_;
     my $group = shift @_;
+    my $newgroup = shift @_;
     my $target;
     my $nowait;
 
@@ -270,7 +294,7 @@ sub build_pfp {
 	## this is just for testing at this point ##
 	# TODO: we still need to determine how the target is going to
 	# be determined. Leave it as is for now
-	$target .= "/" . $group . "/" . $username;
+	$target .= "/" . $newgroup . "/" . $username;
     }
     
     my $pfp = <<EOF;
@@ -449,6 +473,43 @@ sub get_username {
 	errorLog ("Could not determine username.", $usermsg, "crit", "UNKNOWN");
     }
     return trim($username);
+}
+
+sub translateGroup {
+    my $group = shift;
+
+    #if the config isn't defined then no translation
+    if (($config->{paths}->{grpxlateurl} eq "") or (!$config->{paths}->{grpxlateurl})) {
+	return $group;
+    }
+
+    my $url = $config->{paths}->{grpxlateurl} . $group;
+    my $response = HTTP::Tiny->new->get($url);
+    my $json;
+
+    if ($response->{success}) {
+	# the eval statement is used to validate the json
+	eval {
+	    decode_json($response->{content});
+	    1;
+	} or do {
+	    my $error = $@;
+	    my $usermsg = "FATAL ERROR: I did not get a valid response from the tranlation service. Please contact $config->{support}->{email}\n";
+	    my $sysmsg = "Invalid response from $url: $error\n";
+	    my $user = get_username();
+	    errorLog($sysmsg, $usermsg, "crit", $user); #exit with error
+	};
+	$json = decode_json($response->{content});
+	return $json->{bridges_to_bridges2}->{$group};
+	#TODO add error checking for invalid json here
+    } else {
+	my $usermsg = "FATAL ERROR: I could not connect to group translation service. Please contact $config->{support}->{email}\n";
+	my $sysmsg = "Failed to get proper response for group translation from $url: $response->{status} $response->{reason}\n";
+	my $user = get_username();
+	errorLog($sysmsg, $usermsg, "crit", $user); #exit with error
+    }
+    #something odd happened
+    return -1;
 }
 
 sub trim {
