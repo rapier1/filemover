@@ -30,7 +30,7 @@ use Data::Dumper; # debugging purposes
 use Sys::Syslog; #logging facility
 use JSON; # for parsing the group translation data
 use HTTP::Tiny; # for getting the group translation data
-use Try::Tiny;
+use Cwd;
 
 openlog("FILEMOVER", "pid", "LOG_USER");
 
@@ -41,7 +41,7 @@ openlog("FILEMOVER", "pid", "LOG_USER");
 #########################
 
 my %options; 
-my $configure_path = "/pylon5/pscstaff/rapier/filemover/filemover.cfg";
+my $configure_path = "/ocean/projects/pscstaff/rapier/filemover/filemover.cfg";
 my $config= Config::Tiny->new;
 local $| = 1;
 
@@ -115,9 +115,6 @@ sub check_filepaths {
     my @groups = split ("\n", $gid);
 
     #check each entry in the array and see if it corresponds to a valid path
-
-    print "\nChecking groups and paths:\n";
-
     foreach $gid (@groups) {
 	# get the new group name on the target filesystem
 	# if it doesn't exist spit a warning and move to the next
@@ -135,8 +132,7 @@ sub check_filepaths {
 	    if (-e $pathbase) {
 		# it does so add it to our hash
 		$sources{$gid}{'path'} = $pathbase;
-		$sources{$gid}{'newgroup'} = $newgroup;
-		print "$config->{filesystem}->{outbound}/$gid/$username will be copied to $config->{filesystem}->{inbound}/$newgroup/$username\n"; 
+		$sources{$gid}{'newgroup'} = $newgroup;		
 	    }
 	}
     }
@@ -452,8 +448,16 @@ sub fire_slurm {
     my $path = shift @_;
 
     print "Submitting batch job found at $path\n";
+
+    my $command;
+    if ($config->{slurmopts}->{reservation}) {
+	$command = "$config->{paths}->{sbatch} $config->{slurmopts}->{reservation} $path";
+    } else {
+	$command = "$config->{paths}->{sbatch} $path";
+    }
+
     (my $result, my $err, my $exit) = capture {
-	system("$config->{paths}->{sbatch} $config->{slurmopts}->{reservation} $path")
+	    system($command)
     };
     if ($result =~ "Submitted batch") {
 	$result =~ /(\d+)/;
@@ -477,36 +481,30 @@ sub get_username {
 
 sub translateGroup {
     my $group = shift;
-
-    #if the config isn't defined then no translation
-    if (($config->{paths}->{grpxlateurl} eq "") or (!$config->{paths}->{grpxlateurl})) {
-	return $group;
-    }
-
     my $url = $config->{paths}->{grpxlateurl} . $group;
     my $response = HTTP::Tiny->new->get($url);
     my $json;
 
+    #print "url: $url\n";
+
+    #print "response: $response->{status}\n";
+    #print "response: $response->{reason}\n";
+    #print "response: $response->{content}\n";
+
+    
     if ($response->{success}) {
-	# the eval statement is used to validate the json
-	eval {
-	    decode_json($response->{content});
-	    1;
-	} or do {
-	    my $error = $@;
-	    my $usermsg = "FATAL ERROR: I did not get a valid response from the tranlation service. Please contact $config->{support}->{email}\n";
-	    my $sysmsg = "Invalid response from $url: $error\n";
-	    my $user = get_username();
-	    errorLog($sysmsg, $usermsg, "crit", $user); #exit with error
-	};
 	$json = decode_json($response->{content});
+	if (!$json->{bridges_to_bridges2}->{$group}) {
+	    return -1;
+	}
 	return $json->{bridges_to_bridges2}->{$group};
+
 	#TODO add error checking for invalid json here
     } else {
 	my $usermsg = "FATAL ERROR: I could not connect to group translation service. Please contact $config->{support}->{email}\n";
-	my $sysmsg = "Failed to get proper response for group translation from $url: $response->{status} $response->{reason}\n";
+	my $sysmsg = "Failed to get proper response for group translation from $url\n";
 	my $user = get_username();
-	errorLog($sysmsg, $usermsg, "crit", $user); #exit with error
+	errorLog($sysmsg, $usermsg, "crit", $user);
     }
     #something odd happened
     return -1;
@@ -623,8 +621,9 @@ my $slurm_batch = build_slurm_batch($filemove_command);
 # we have the slurm batch file written. Execute it. 
 if (!$options{b}) {
     my $slurm_id = fire_slurm($slurm_batch);
+    my $cwd = cwd(); 
     print "Your file transfer job has been submitted to slurm. The slurm job id is $slurm_id\n";
-    print "You can track progress in the filemover_" . $slurm_id . ".log file\n";
+    print "You can track progress in the ". $cwd ."/filemover_" . $slurm_id . ".log file\n";
     syslog ("notice", "Batch job $slurm_id submitted to slurm for user: " . get_username());
 } else {
     print "The slurm job batch file has been written to your home directory but not executed\n";
