@@ -133,7 +133,7 @@ sub check_filepaths {
 	    if (-e $pathbase) {
 		# it does so add it to our hash
 		$sources{$gid}{'path'} = $pathbase;
-		$sources{$gid}{'newgroup'} = $gid;		
+		$sources{$gid}{'newgroup'} = $newgroup;		
 	    }
 	}
     }
@@ -497,10 +497,10 @@ sub translateGroup {
     
     if ($response->{success}) {
 	$json = decode_json($response->{content});
-	if (!$json->{bridges2_to_bridges}->{$group}) {
+	if (!$json->{bridges_to_bridges2}->{$group}) {
 	    return -1;
 	}
-	return $json->{bridges2_to_bridges}->{$group};
+	return $json->{bridges_to_bridges2}->{$group};
 
 	#TODO add error checking for invalid json here
     } else {
