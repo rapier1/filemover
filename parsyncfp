@@ -101,7 +101,7 @@ use vars qw($allPIDs $ALL_SYS_RSYNC_PIDS $ch $CHECKPERIOD $cmd
   $PERFQUERY $avgTCPrecv $avgTCPsend $avgRDMArecv $avgRDMAsend
   $WARN_FPART_FILES $MAX_FPART_FILES $SKIP_FPART_CHECK $FROMLIST $TRIMPATH $tf
   $TRUSTME $N @A $bytefiles $rprtnbr $sfx $ALLBYTES $bytesxf $IB_PRSNT $CFL $rHOSTNAME
-  @NETDEVLIST $NETDEVADDRLIST @spinner $USER $NOSPINZONE $UTILPATH) ;
+  @NETDEVLIST $NETDEVADDRLIST @spinner $USER $MAXFILES $NOSPINZONE $UTILPATH) ;
 
 $PARSYNCVER = << "VERSION";
 parsyncfp version 1.69 (Covid Synchronicity)
@@ -139,6 +139,7 @@ VERSION
   "debug|d!"      => \$DEBUG,       # developer-level info; (historical) alias for '-v 3'
   "user=s"        => \$USER,        # username included for logging purposes. 
   "spinneroff"    => \$NOSPINZONE,  # disable the spinner and other terminal dependend characters 
+  "maxfiles=i"    => \$MAXFILES,    # maximum number of files per chunkfile
   "utilpath=s"    => \$UTILPATH,    # optional path for utility files (scut, etc) 
 );
 
@@ -182,12 +183,12 @@ my $susp_cnt   = 0;
 my $unsusp_cnt = 0;
 
 my $fpcheck = `which fpart`;
-if ( $fpcheck eq "" ) {
-  FATAL(
-    "There's no 'fpart' executable on your PATH. Did you install it?
-See: https://github.com/martymac/fpart/blob/master/README"
-  );
-}
+#if ( $fpcheck eq "" ) {
+#  FATAL(
+#    "There's no 'fpart' executable on your PATH. Did you install it?
+#See: https://github.com/martymac/fpart/blob/master/README"
+#  );
+#}
 
 if ( !defined $RSYNCOPTS ) { $RSYNCOPTS = ""; $DFLT_RSYNCOPTS = "-a -s"; }
 else {    # if def $RSYNCOPTS, then user takes all responsibility
@@ -357,14 +358,25 @@ else { $MAXBW = int( $MAXBW / $NP + 0.5 ); }    # users expect total maxbw; so h
 if ( !defined $MAXLOAD ) { $MAXLOAD = $NP + 2; }                  #  + 1 for IO load
 if ( !defined $ROOTDIR ) { $ROOTDIR = `pwd`; chomp $ROOTDIR; }    # where all dirs must be rooted.
 if ( !defined $FPARTSIZE ) { $FPARTSIZE = "10G"; $FPARTSIZE_N = 104857600; }    # default is 10Gish
-elsif ( $FPARTSIZE < 0 ) {
-  $FPARTSIZE        = $FPARTSIZE * -1;
+if ( $FPARTSIZE =~ /[PpTtGgMmKk]/ ) {
+    $FPARTSIZE_N = ptgmk($FPARTSIZE);
+} else {
+    $FPARTSIZE_N = $FPARTSIZE;
+}
+if ( $FPARTSIZE_N < 0 ) {
+  $FPARTSIZE_N        = $FPARTSIZE_N * -1;
   $SKIP_FPART_CHECK = 1;
 }    # Tells check to ignore huge #s of chunkfiles
-if   ( $FPARTSIZE =~ /[PpTtGgMmKk]/ ) { $FPARTSIZE_N = ptgmk($FPARTSIZE); }
-else                                  { $FPARTSIZE_N = $FPARTSIZE; }
+
 if ($DEBUG) {
   debug( __LINE__, "FPARTSIZE set to: [$FPARTSIZE]\nFPARTSIZE_N set to [$FPARTSIZE_N]" );
+}
+
+if ( !defined $MAXFILES) { $MAXFILES = 25000; }
+if ($MAXFILES <= 0) { $MAXFILES = 25000; }
+
+if ($DEBUG) {
+  debug( __LINE__, "MAXFILES set to: [$MAXFILES]\n" );
 }
 
 # fix .ssh/config file to eliminate wonky errors.
@@ -614,17 +626,17 @@ if ( defined $FROMLIST ) {
     # and then once the chunk is complete, move them to the $FP_ROOT_DIR where the action takes 
     # place after it's found that a chunk file exists there.
     $fpartcmd =
-"fpart -v -L  -W 'mv \$FPART_PARTFILENAME $FP_ROOT_DIR'  -s $FPARTSIZE_N $AFLAG -i '-' -o $FP_HOLD_ROOT < $tf 2> $FPART_LOGFILE & echo \"\${!}\" > $FP_PIDFILE";
+"/opt/packages/parsync/fpart -v -L  -W 'mv \$FPART_PARTFILENAME $FP_ROOT_DIR'  -f $MAXFILES -s $FPARTSIZE_N $AFLAG -i '-' -o $FP_HOLD_ROOT < $tf 2> $FPART_LOGFILE & echo \"\${!}\" > $FP_PIDFILE";
     if ($DEBUG) { debug( __LINE__, "fpartcmd(1) = [$fpartcmd]\n") };
 } else {  # shell variable = $FPART_PARTFILENAME
     $fpartcmd =
-"cd $TRIMPATH; fpart -v -L -W 'mv \$FPART_PARTFILENAME $FP_ROOT_DIR' -s $FPARTSIZE_N $AFLAG -i $tf -o $FP_HOLD_ROOT 2> $FPART_LOGFILE & echo \"\${!}\" > $FP_PIDFILE";
+"cd $TRIMPATH; /opt/packages/parsync/fpart -v -L -W 'mv \$FPART_PARTFILENAME $FP_ROOT_DIR' -f $MAXFILES -s $FPARTSIZE_N $AFLAG -i $tf -o $FP_HOLD_ROOT 2> $FPART_LOGFILE & echo \"\${!}\" > $FP_PIDFILE";
     if ($DEBUG) { debug( __LINE__, "fpartcmd(2) = [$fpartcmd]\n") };
   }
 } else {                               # use the full recursive fpart
                                        # capture the child PID
   $fpartcmd =
-"fpart -v -L -W 'mv \$FPART_PARTFILENAME $FP_ROOT_DIR' -z -s $FPARTSIZE_N -o $FP_HOLD_ROOT $fnd2r  2> $FPART_LOGFILE & echo \"\${!}\" > $FP_PIDFILE";
+"/opt/packages/parsync/fpart -v -L -W 'mv \$FPART_PARTFILENAME $FP_ROOT_DIR' -z -f $MAXFILES -s $FPARTSIZE_N -o $FP_HOLD_ROOT $fnd2r  2> $FPART_LOGFILE & echo \"\${!}\" > $FP_PIDFILE";
     if ($DEBUG) { debug( __LINE__, "fpartcmd(3) = [$fpartcmd]\n") };
 } # now fpart sequence works fine.  Files are created in the 'hold' subdir, then mv'ed to the $FP_ROOT_DIR on close. 
 
@@ -708,7 +720,7 @@ while ( $RSYNCS_GOING < $NP && $KEEPGOING ) {    #
     fixfilenames( $CUR_FP_FLE, $ROOTDIR );       # check & fix for spaces, bad chars.
          # entire rsync command and PID capture (used in total of 2 places)
     $logfile = $bytefiles . $CUR_FPI;
-	$RSYNC_CMD = "cd $TRIMPATH && rsync  --bwlimit=$MAXBW  $RSYNCOPTS -a -s ";
+	$RSYNC_CMD = "cd $TRIMPATH && rsync --bwlimit=$MAXBW  $RSYNCOPTS -a -s ";
 	$RSYNC_CMD .= "--log-file=$logfile --files-from=$CUR_FP_FLE  $ROOTDIR  $TARGET  & echo \"\${!}\" >> $PIDFILE";
 	if ( $VERBOSE >= 2 ) { 
 	    INFO("Starting rsync for chunkfile [$CUR_FP_FLE]..\n"); 
@@ -894,7 +906,7 @@ while ( $CUR_FPI <= $NBR_FP_FLES || $FP_RUNNING || $STILLRSYNCS ) {
   my $warncount = 0;
   ### INSERT test to check that $nbr_cur_fpc_fles is < 20,000.
   if ( $nbr_cur_fpc_fles > $WARN_FPART_FILES && $warncount < 1 ) {
-    if ( $VERBOSE >= 2 ) {
+    if ( $VERBOSE >= 2 && !$SKIP_FPART_CHECK) {
       WARN(
         "You've exceeded [$WARN_FPART_FILES] chunk files.  
 Are you sure you've set the chunk size (--chunksize) appropriately for this transfer?
@@ -1132,7 +1144,7 @@ PerfStats: Group; $groupname: Time; $el_sec s: Wait; $fpartwaittime s: Bytes; $A
       }
       if ($fpartwaitflag) {
 	  my $fpartwait = time() - $fpartts;
-	  INFO("Waited $fpartwait s for fpart.");
+	  INFO("Waited $fpartwait s for fpart.\n");
 	  $fpartwaittime += $fpartwait;
 	  #fpartwaitflag is explicitly set to 0 previously.
       }
@@ -1507,10 +1519,10 @@ If this mod of your ~/.ssh/config file is OK, hit [Enter].  Otherwise hit [s] to
 "echo -n \"#Next 2 lines added by parsyncfp\nForwardX11Trusted       yes\nForwardX11              yes\n\" >> $HOME/.ssh/config"
       );
       system("chmod 600 $HOME/.ssh/config");
-      INFO("Your ~/.ssh/config file is set correctly.");
+      INFO("Your ~/.ssh/config file is set correctly.\n");
       sleep 1;
     } else {
-      INFO("Your ~/.ssh/config was not changed.");
+      INFO("Your ~/.ssh/config was not changed.\n");
       sleep 1;
     }
   }
