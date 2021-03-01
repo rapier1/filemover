@@ -12,6 +12,11 @@ my $dir = $ARGV[0];
 my $username = $ARGV[1];
 my $jobid = $ARGV[2];
 
+#only here for ease of changing. Yes, it should be in the subs. 
+my $errfile = "/pylon5/pscstaff/parsync/results/rsyncerrors.log";
+my $successfile = "/pylon5/pscstaff/parsync/results/fmsuccess.log";
+
+
 if (!$username) {
     FATAL("No user specified when calling logrunner.pl", "");
 } 
@@ -31,6 +36,7 @@ if (!$jobid) {
     if ($rsyncmsg) {
 	$subject = "ERROR: Rsync errors for $username";
 	mailResults($subject, $rsyncmsg);
+	writeRsyncErrors($username);
     }
 } else {
     $logmsg =  "The filemover process for $username is complete.\n";
@@ -40,6 +46,7 @@ if (!$jobid) {
     $logmsg .= processUserLog($username, $jobid, $dir);
     $subject = "SUCCESS: Filemover Perfomance Stats for $username";
     mailResults($subject, $logmsg);
+    writeFMSuccess($username, $logmsg);
 }
 
 exit;
@@ -83,6 +90,25 @@ sub processUserLog {
 	}
     }
     return $perfdata;
+}
+
+sub writeRsyncErrors {
+    my $user = shift;
+    my $msg = "ERROR: Rsync errors in $dir";
+    open (FH, ">>", $errfile) or FATAL ($user, "Cannot open $errfile for updates");
+    print FH "$user:$msg\n";
+    close (FH);
+    return;
+}
+
+sub writeFMSuccess {
+    my $user = shift;
+    my $msg = shift;
+    chomp $msg; # just in case
+    open (FH, ">>", $successfile) or FATAL ($user, "Cannot open $successfile for updates");
+    print FH "$user:$msg\n";
+    close (FH);
+    return;
 }
 
 sub mailResults {
